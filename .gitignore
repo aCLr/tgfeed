@@ -1,0 +1,5 @@
+/target
+.idea
+config/local*
+test.db
+tdlib
