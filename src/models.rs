@@ -1,11 +1,11 @@
 #[derive(Debug, sqlx::FromRow)]
 pub struct Post {
-    pub(crate) title: Option<String>,
-    pub(crate) link: String,
-    pub(crate) guid: String,
-    pub(crate) pub_date: String,
-    pub(crate) content: String,
-    pub(crate) channel_id: i64,
+    pub title: Option<String>,
+    pub link: String,
+    pub telegram_id: i64,
+    pub pub_date: String,
+    pub content: String,
+    pub chat_id: i64,
 }
 
 impl Post {
@@ -31,19 +31,19 @@ impl Post {
 
 #[derive(Debug)]
 pub struct NewChannel {
-    pub(crate) title: String,
-    pub(crate) username: String,
-    pub(crate) link: String,
-    pub(crate) description: Option<String>,
+    pub title: String,
+    pub username: String,
+    pub link: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct Channel {
-    pub(crate) id: i64,
-    pub(crate) title: String,
-    pub(crate) username: String,
-    pub(crate) link: String,
-    pub(crate) description: Option<String>,
+    pub id: i64,
+    pub title: String,
+    pub username: String,
+    pub link: String,
+    pub description: Option<String>,
 }
 
 impl Channel {
@@ -62,4 +62,13 @@ impl Channel {
     pub fn description(&self) -> &Option<String> {
         &self.description
     }
+}
+
+#[derive(Debug)]
+pub struct File {
+    pub local_path: Option<String>,
+    // id to download
+    pub remote_file: i32,
+    // id to make requests
+    pub remote_id: String,
 }

@@ -1,6 +1,6 @@
-pub mod models;
-pub use models::{Channel, NewChannel, Post};
+pub use crate::models::{Channel, NewChannel, Post};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use crate::models::File;
 
 pub struct DbService {
     pool: SqlitePool,
@@ -15,13 +15,40 @@ impl DbService {
         Ok(Self { pool })
     }
 
+    pub async fn save_file(&self, file: &File) -> anyhow::Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO files (local_path, remote_file, remote_id) VALUES ($1, $2, $3)
+            ON CONFLICT(remote_id) DO UPDATE SET remote_file = excluded.remote_file, local_path=excluded.local_path"#,
+            file.local_path, file.remote_file, file.remote_id
+        )
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_file(&self, file: &File) -> anyhow::Result<Option<File>> {
+        Ok(sqlx::query_as!(
+            File,
+            "SELECT * FROM files WHERE remote_id = $1",
+            file.remote_id
+        )
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
     pub async fn save_channel(&self, channel: NewChannel) -> anyhow::Result<()> {
         sqlx::query_as!(
             Channel,
             r#"INSERT INTO channels (title, link, description, username)
             VALUES ($1, $2, $3, $4)"#,
-            channel.title, channel.link, channel.description, channel.username
-        ).execute(&self.pool).await?;
+            channel.title,
+            channel.link,
+            channel.description,
+            channel.username
+        )
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -30,8 +57,15 @@ impl DbService {
             sqlx::query!(
                 r#"INSERT INTO posts (title, link, guid, pub_date, content, channel_id)
                 VALUES ($1, $2, $3, $4, $5, $6)"#,
-                p.title, p.link, p.guid, p.pub_date, p.content, p.channel_id
-            ).execute(&self.pool).await?;
+                p.title,
+                p.link,
+                p.guid,
+                p.pub_date,
+                p.content,
+                p.channel_id
+            )
+                .execute(&self.pool)
+                .await?;
         }
         Ok(())
     }
@@ -62,9 +96,9 @@ impl DbService {
             LIMIT 25"#,
             ch.id
         )
-        // .bind(ch.id)
-        .fetch_all(&self.pool)
-        .await {
+            // .bind(ch.id)
+            .fetch_all(&self.pool)
+            .await {
             Ok(p) => p,
             Err(e) => {
                 log::error!("{:?}", e);

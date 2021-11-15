@@ -27,8 +27,8 @@ mod filters {
 }
 
 mod handlers {
-    use warp::http::header::CONTENT_TYPE;
     use crate::app::App;
+    use warp::http::header::CONTENT_TYPE;
     use warp::http::StatusCode;
     use warp::Reply;
 
@@ -40,17 +40,23 @@ mod handlers {
         match app.get_posts_or_search(channel_name.as_str()).await {
             Ok(feed) => match feed {
                 None => {
-                    response = warp::reply::with_status(
-                        "".to_string(),
-                        StatusCode::NOT_FOUND,
-                    ).into_response();
-                },
-                Some(feed) => response = warp::reply::with_header(feed.to_string(), CONTENT_TYPE, "application/rss+xml").into_response(),
+                    response = warp::reply::with_status("".to_string(), StatusCode::NOT_FOUND)
+                        .into_response();
+                }
+                Some(feed) => {
+                    response = warp::reply::with_header(
+                        feed.to_string(),
+                        CONTENT_TYPE,
+                        "application/rss+xml",
+                    )
+                    .into_response()
+                }
             },
-            Err(err) => response = warp::reply::with_status(
-                err.to_string(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ).into_response(),
+            Err(err) => {
+                response =
+                    warp::reply::with_status(err.to_string(), StatusCode::INTERNAL_SERVER_ERROR)
+                        .into_response()
+            }
         }
         Ok(response)
     }

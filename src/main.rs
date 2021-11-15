@@ -1,8 +1,11 @@
 mod app;
+pub mod models;
 mod db;
 mod server;
 mod settings;
 mod telegram;
+
+extern crate time;
 
 use crate::app::App;
 use db::DbService;
@@ -24,13 +27,10 @@ async fn main() {
         settings.telegram.phone,
     );
     log::info!("starting telegram service");
-    telegram
-        .start()
-        .await
-        .expect("can't start telegram service");
     log::info!("telegram service started");
 
     let app = App::new(telegram, db);
+    app.start().await.expect("cannot start application");
     log::info!("starting web server");
     server::run_server(app).await;
 }

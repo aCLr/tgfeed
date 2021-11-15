@@ -1,8 +1,10 @@
+use crate::db::{Channel, DbService, NewChannel, Post};
+use crate::telegram::{NewUpdate, TelegramService};
 use std::future::Future;
-use crate::db::{DbService, NewChannel, Post, Channel};
-use crate::telegram::{TelegramService};
 use std::sync::Arc;
 use tg_collector::parsers::{DefaultTelegramParser, TelegramDataParser};
+use tg_collector::types::FileType;
+use crate::models::File;
 
 struct Inner {
     tg: TelegramService,
@@ -21,7 +23,46 @@ impl App {
         }
     }
 
-    pub async fn get_posts_or_search(&self, channel_name: &str) -> anyhow::Result<Option<rss::Channel>> {
+    pub async fn start(&self) {
+        let mut updates = self.inner
+            .tg
+            .start()
+            .await
+            .expect("can't start telegram service");
+        let inner = self.inner.clone();
+        tokio::spawn(async move {
+            while let Some(update) = updates.recv().await {
+                match update {
+                    NewUpdate::Post(post) => {
+                        inner.db.save_channel_posts(vec![post]).await?;
+                    }
+                    NewUpdate::Channel(channel) => {
+                        inner.db.save_channel(channel).await?;
+                    }
+                    NewUpdate::File(new_file) => {
+                        let db_file = inner.db.get_file(&new_file).await?;
+
+                        match db_file {
+                            None => inner.tg.download_file(new_file.remote_file).await?,
+                            Some(db_file) => {
+                                if db_file.local_path.is_none() && new_file.local_path.is_some() {
+                                    // TODO: notify that file downloaded and post can be shown
+                                }
+                            }
+                        }
+                        if db_file.is_none() || db_file.ne(&new_file) {
+                            inner.db.save_file(&new_file).await?;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    pub async fn get_posts_or_search(
+        &self,
+        channel_name: &str,
+    ) -> anyhow::Result<Option<rss::Channel>> {
         match self.get_channel_posts(channel_name).await? {
             None => {
                 log::info!("posts not found, searching for new channel");
@@ -36,7 +77,7 @@ impl App {
                     }
                 }
             }
-            Some(p) => {Ok(Some(p))}
+            Some(p) => Ok(Some(p)),
         }
     }
 
@@ -74,34 +115,33 @@ impl App {
         Ok(Some(feed))
     }
 
-    async fn get_new_channel(&self, channel_name: &str) -> anyhow::Result<Option<(Channel)>>{
-        match self
-            .inner
-            .tg
-            .search_channel(channel_name)
-            .await? {
-            None => {Ok(None)}
+    async fn get_new_channel(&self, channel_name: &str) -> anyhow::Result<Option<(Channel)>> {
+        match self.inner.tg.search_channel(channel_name).await? {
+            None => Ok(None),
             Some(ch) => {
                 let messages = self.inner.tg.get_channel_history(&ch).await?;
                 log::info!("found messages: {}", messages.len());
-                self.inner.db.save_channel(NewChannel{
-                    title: ch.title,
-                    username: channel_name.to_string(),
-                    link: "".to_string(),
-                    description: {
-                        let trimmed = ch.description.trim();
-                        match trimmed.is_empty() {
-                            true => {None}
-                            false => {Some(trimmed.to_string())}
-                        }
-                    },
-                }).await?;
+                self.inner
+                    .db
+                    .save_channel(NewChannel {
+                        title: ch.title,
+                        username: channel_name.to_string(),
+                        link: "".to_string(),
+                        description: {
+                            let trimmed = ch.description.trim();
+                            match trimmed.is_empty() {
+                                true => None,
+                                false => Some(trimmed.to_string()),
+                            }
+                        },
+                    })
+                    .await?;
 
                 let saved_channel = match self.inner.db.get_channel(channel_name).await? {
                     None => {
                         log::info!("nothing found");
                         return Ok(None);
-                    },
+                    }
                     Some(ch) => ch,
                 };
                 log::info!("{:?}", saved_channel);
@@ -109,15 +149,38 @@ impl App {
                 let parser = DefaultTelegramParser::new();
                 let mut posts = Vec::with_capacity(messages.len());
                 for msg in messages.into_iter() {
-                    let content = parser.parse_message_content(msg.content()).await?.0.unwrap_or_default();
-                    posts.push(Post {
-                        title: None,
-                        link: "".to_string(),
-                        guid: msg.id().to_string(),
-                        pub_date: msg.date().to_string(),
-                        content,
-                        channel_id: saved_channel.id,
-                    })
+                    let (content, files) = parser.parse_message_content(msg.content()).await?;
+                    if let Some(content) = content {
+                        posts.push(Post {
+                            title: None,
+                            link: "".to_string(),
+                            guid: msg.id().to_string(),
+                            pub_date: msg.date().to_string(),
+                            channel_id: saved_channel.id,
+                            content,
+                        })
+                    }
+
+                    if let Some(files) = files {
+                        for f in files.iter() {
+                            match &f.file_type {
+                                FileType::Document => {}
+                                FileType::Audio(_) => {}
+                                FileType::Video(_) => {}
+                                FileType::Animation(_) => {}
+                                FileType::Image(img) => {
+                                    if let Err(err) = self
+                                        .inner
+                                        .tg
+                                        .download_file(f.path.remote_file.parse().unwrap())
+                                        .await
+                                    {
+                                        log::error!("downloading failed; message_id={}, channel_name={}, err={}", msg.id(), channel_name, err)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 self.inner.db.save_channel_posts(posts).await?;
                 Ok(Some(saved_channel))

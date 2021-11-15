@@ -147,7 +147,7 @@ dependencies = [
  "libc",
  "num-integer",
  "num-traits 0.2.14",
- "time",
+ "time 0.1.43",
  "winapi",
 ]
 
@@ -304,12 +304,6 @@ name = "dotenv"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
-
-[[package]]
-name = "dyn-clone"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee2626afccd7561a06cf1367e2950c4718ea04565e20fb5029b6c7d8ad09abcf"
 
 [[package]]
 name = "either"
@@ -1543,20 +1537,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tg-collector"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "dyn-clone",
- "futures",
- "futures-util",
- "log",
- "rust-tdlib",
- "serde 1.0.130",
- "tokio",
-]
-
-[[package]]
 name = "tgfeed"
 version = "0.1.0"
 dependencies = [
@@ -1566,9 +1546,10 @@ dependencies = [
  "futures",
  "log",
  "rss",
+ "rust-tdlib",
  "serde 1.0.130",
  "sqlx",
- "tg-collector",
+ "time 0.3.5",
  "tokio",
  "warp",
 ]
@@ -1601,6 +1582,15 @@ checksum = "ca8a50ef2360fbd1eeb0ecd46795a87a19024eb4b53c5dc916ca1fd95fe62438"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "time"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41effe7cfa8af36f439fac33861b66b049edc6f9a32331e2312660529c1c24ad"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
