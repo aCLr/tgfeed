@@ -1,11 +1,15 @@
+use rust_tdlib::types::{Chat, File as TgFile};
+
+pub type TelegramPostId = i64;
+pub type TelegramChatId = i64;
 #[derive(Debug, sqlx::FromRow)]
 pub struct Post {
     pub title: Option<String>,
     pub link: String,
-    pub telegram_id: i64,
-    pub pub_date: String,
+    pub telegram_id: TelegramPostId,
+    pub pub_date: i32,
     pub content: String,
-    pub chat_id: i64,
+    pub chat_id: TelegramChatId,
 }
 
 impl Post {
@@ -15,26 +19,25 @@ impl Post {
     pub fn link(&self) -> &str {
         &self.link
     }
-    pub fn guid(&self) -> &str {
-        &self.guid
+    pub fn telegram_id(&self) -> TelegramPostId {
+        self.telegram_id
     }
-    pub fn pub_date(&self) -> &str {
-        &self.pub_date
+    pub fn pub_date(&self) -> i32 {
+        self.pub_date
     }
     pub fn content(&self) -> &str {
         &self.content
     }
-    pub fn channel_id(&self) -> i64 {
-        self.channel_id
+    pub fn chat_id(&self) -> TelegramChatId {
+        self.chat_id
     }
 }
 
 #[derive(Debug)]
 pub struct NewChannel {
     pub title: String,
+    pub telegram_id: TelegramChatId,
     pub username: String,
-    pub link: String,
-    pub description: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -42,33 +45,28 @@ pub struct Channel {
     pub id: i64,
     pub title: String,
     pub username: String,
-    pub link: String,
-    pub description: Option<String>,
+    pub telegram_id: TelegramChatId,
 }
 
-impl Channel {
-    pub fn id(&self) -> i64 {
-        self.id
-    }
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-    pub fn username(&self) -> &str {
-        &self.username
-    }
-    pub fn link(&self) -> &str {
-        &self.link
-    }
-    pub fn description(&self) -> &Option<String> {
-        &self.description
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct File {
     pub local_path: Option<String>,
     // id to download
     pub remote_file: i32,
     // id to make requests
     pub remote_id: String,
+    pub telegram_post_id:  TelegramPostId,
+}
+
+
+impl From<&TgFile> for File {
+    fn from(file: &TgFile) -> Self {
+        Self {
+            local_path: Some(file.local().path().as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            remote_file: file.id(),
+            remote_id: file.remote().unique_id().clone(),
+        }
+    }
 }

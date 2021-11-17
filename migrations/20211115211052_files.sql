@@ -1,7 +1,7 @@
 CREATE TABLE files (
    id integer primary key autoincrement not null,
    local_path text null,
-   remote_file int not null unique ,
+   remote_file INTEGER not null unique ,
    remote_id text not null
 );
 

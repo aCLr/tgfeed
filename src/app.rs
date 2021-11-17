@@ -1,10 +1,9 @@
 use crate::db::{Channel, DbService, NewChannel, Post};
+use crate::models::File;
 use crate::telegram::{NewUpdate, TelegramService};
 use std::future::Future;
 use std::sync::Arc;
-use tg_collector::parsers::{DefaultTelegramParser, TelegramDataParser};
-use tg_collector::types::FileType;
-use crate::models::File;
+use anyhow::Context;
 
 struct Inner {
     tg: TelegramService,
@@ -23,40 +22,79 @@ impl App {
         }
     }
 
-    pub async fn start(&self) {
-        let mut updates = self.inner
-            .tg
-            .start()
-            .await
-            .expect("can't start telegram service");
+    pub async fn start(&self) -> anyhow::Result<()> {
+        log::info!("starting telegram service");
+        let mut updates = self.inner.tg.start().await?;
+        log::info!("telegram service started");
+
         let inner = self.inner.clone();
         tokio::spawn(async move {
             while let Some(update) = updates.recv().await {
+                log::info!("new update: {:?}", update);
                 match update {
                     NewUpdate::Post(post) => {
-                        inner.db.save_channel_posts(vec![post]).await?;
+                        if let Err(err) = inner.db.save_channel_posts(vec![post]).await {
+                            log::error!("cannot save channel posts: {}", err)
+                        };
                     }
                     NewUpdate::Channel(channel) => {
-                        inner.db.save_channel(channel).await?;
+                        if let Err(err) = inner.db.save_channel(channel).await {
+                            log::error!("cannot save channel: {}", err)
+                        };
                     }
                     NewUpdate::File(new_file) => {
-                        let db_file = inner.db.get_file(&new_file).await?;
-
-                        match db_file {
-                            None => inner.tg.download_file(new_file.remote_file).await?,
-                            Some(db_file) => {
-                                if db_file.local_path.is_none() && new_file.local_path.is_some() {
-                                    // TODO: notify that file downloaded and post can be shown
+                        match inner.db.get_file(&new_file).await {
+                            Err(err) => {
+                                log::error!("cannot get file: {}", err)
+                            }
+                            Ok(db_file) => {
+                                match &db_file {
+                                    None => {
+                                        if let Err(err) =
+                                            inner.tg.download_file(new_file.remote_file).await
+                                        {
+                                            log::error!("cannot download file: {}", err);
+                                        }
+                                    }
+                                    Some(db_file) => {
+                                        if db_file.local_path.is_none()
+                                            && new_file.local_path.is_some()
+                                        {
+                                            // TODO: notify that file downloaded and post can be shown
+                                        }
+                                    }
+                                }
+                                if db_file.is_none() || db_file.unwrap().ne(&new_file) {
+                                    if let Err(err) = inner.db.save_file(&new_file).await {
+                                        log::error!("cannot save file: {}", err);
+                                    }
                                 }
                             }
-                        }
-                        if db_file.is_none() || db_file.ne(&new_file) {
-                            inner.db.save_file(&new_file).await?;
                         }
                     }
                 }
             }
         });
+        Ok(())
+    }
+
+    pub async fn synchronize_channels(&self) -> anyhow::Result<()> {
+        let channels = self.inner.tg.get_all_channels().await?;
+        for channel in channels.into_iter() {
+            self.inner.db.save_channel(channel).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn synchronize_files(&self) -> anyhow::Result<()> {
+        let files = self.inner.db.get_not_loaded_files().await?;
+        for f in files.iter() {
+            if let Err(err) = self.inner.tg.download_file(f.remote_file).await {
+                log::error!("file {} downloading failed: {}", f.remote_file, err)
+            };
+        }
+        Ok(())
+
     }
 
     pub async fn get_posts_or_search(
@@ -92,7 +130,7 @@ impl App {
         let mut items = Vec::new();
         for p in posts.into_iter() {
             let guid = rss::GuidBuilder::default()
-                .value(p.guid().to_string())
+                .value(p.telegram_id().to_string())
                 .build()
                 .map_err(rss_err)?;
             let item = rss::ItemBuilder::default()
@@ -106,9 +144,9 @@ impl App {
             items.push(item);
         }
         let feed = rss::ChannelBuilder::default()
-            .title(channel.title().clone().to_string())
-            .description(channel.description().clone().unwrap_or_default())
-            .link(channel.link().clone().to_string())
+            .title(channel.title.clone())
+            // .description(channel.description().clone().unwrap_or_default()) TODO: description
+            // .link(channel.link().clone().to_string()) TODO: link
             .items(items)
             .build()
             .map_err(|e| anyhow::anyhow!("error during building feed: {}", e))?;
@@ -119,23 +157,9 @@ impl App {
         match self.inner.tg.search_channel(channel_name).await? {
             None => Ok(None),
             Some(ch) => {
-                let messages = self.inner.tg.get_channel_history(&ch).await?;
-                log::info!("found messages: {}", messages.len());
-                self.inner
-                    .db
-                    .save_channel(NewChannel {
-                        title: ch.title,
-                        username: channel_name.to_string(),
-                        link: "".to_string(),
-                        description: {
-                            let trimmed = ch.description.trim();
-                            match trimmed.is_empty() {
-                                true => None,
-                                false => Some(trimmed.to_string()),
-                            }
-                        },
-                    })
-                    .await?;
+                let messages = self.inner.tg.get_channel_history(ch.telegram_id).await?;
+
+                self.inner.db.save_channel(ch).await?;
 
                 let saved_channel = match self.inner.db.get_channel(channel_name).await? {
                     None => {
@@ -146,43 +170,7 @@ impl App {
                 };
                 log::info!("{:?}", saved_channel);
 
-                let parser = DefaultTelegramParser::new();
-                let mut posts = Vec::with_capacity(messages.len());
-                for msg in messages.into_iter() {
-                    let (content, files) = parser.parse_message_content(msg.content()).await?;
-                    if let Some(content) = content {
-                        posts.push(Post {
-                            title: None,
-                            link: "".to_string(),
-                            guid: msg.id().to_string(),
-                            pub_date: msg.date().to_string(),
-                            channel_id: saved_channel.id,
-                            content,
-                        })
-                    }
-
-                    if let Some(files) = files {
-                        for f in files.iter() {
-                            match &f.file_type {
-                                FileType::Document => {}
-                                FileType::Audio(_) => {}
-                                FileType::Video(_) => {}
-                                FileType::Animation(_) => {}
-                                FileType::Image(img) => {
-                                    if let Err(err) = self
-                                        .inner
-                                        .tg
-                                        .download_file(f.path.remote_file.parse().unwrap())
-                                        .await
-                                    {
-                                        log::error!("downloading failed; message_id={}, channel_name={}, err={}", msg.id(), channel_name, err)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                self.inner.db.save_channel_posts(posts).await?;
+                self.inner.db.save_channel_posts(messages).await?;
                 Ok(Some(saved_channel))
             }
         }

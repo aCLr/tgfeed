@@ -1,6 +1,6 @@
 mod app;
-pub mod models;
 mod db;
+pub mod models;
 mod server;
 mod settings;
 mod telegram;
@@ -26,11 +26,13 @@ async fn main() {
         settings.telegram.api_id,
         settings.telegram.phone,
     );
-    log::info!("starting telegram service");
-    log::info!("telegram service started");
 
     let app = App::new(telegram, db);
     app.start().await.expect("cannot start application");
+
+    app.synchronize_channels().await.expect("cannot synchronize channels");
+    app.synchronize_files().await.expect("cannot synchronize files");
+
     log::info!("starting web server");
     server::run_server(app).await;
 }

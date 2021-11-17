@@ -1,18 +1,20 @@
 use crate::models::File;
-use rust_tdlib::types::{FileType, FormattedText, MessageContent, TextEntity, TextEntityType, File as TgFile};
+use rust_tdlib::types::{
+    FileType, FormattedText, MessageContent, TextEntity, TextEntityType,
+};
+use crate::telegram::new_file;
 
 pub fn parse_message_content(message: &MessageContent) -> Option<(Option<String>, Option<File>)> {
     match message {
         MessageContent::MessageText(text) => Some((Some(parse_formatted_text(text.text())), None)),
-        MessageContent::MessageAnimation(message_animation) => {
-            Some((
-                Some(parse_formatted_text(message_animation.caption())),
-                Some(message_animation.animation().into()),
-            ))
-        }
+        MessageContent::MessageAnimation(message_animation) => Some((
+            Some(parse_formatted_text(message_animation.caption())),
+            Some(new_file(message_animation.animation().animation().into())),
+        )),
         MessageContent::MessageAudio(message_audio) => None,
         MessageContent::MessageDocument(message_document) => None,
         MessageContent::MessagePhoto(photo) => {
+            // TODO: choose particular file size
             let file = match photo.photo().sizes().first() {
                 None => None,
                 Some(photo) => Some(photo.photo().into()),
@@ -20,7 +22,6 @@ pub fn parse_message_content(message: &MessageContent) -> Option<(Option<String>
             Some((Some(parse_formatted_text(photo.caption())), file))
         }
         MessageContent::MessageVideo(message_video) => None,
-
 
         MessageContent::MessageChatChangePhoto(_) => None,
 
@@ -39,26 +40,12 @@ pub fn parse_message_content(message: &MessageContent) -> Option<(Option<String>
         MessageContent::MessageLocation(_) => None,
         MessageContent::MessagePassportDataReceived(_) => None,
         MessageContent::MessageScreenshotTaken(_) => None,
-        MessageContent::MessageSticker(message_sticker) => {
-            let file = TelegramFileWithMeta {
-                path: message_sticker.sticker().sticker().into(),
-                file_type: FileType::Image(message_sticker.sticker().into()),
-                file_name: None,
-            };
-            Some((None, Some(file)))
-        }
+        MessageContent::MessageSticker(message_sticker) => None,
         MessageContent::MessageSupergroupChatCreate(_) => None,
 
         MessageContent::MessageVenue(_) => None,
 
-        MessageContent::MessageVideoNote(message_video_note) => {
-            let file = TelegramFileWithMeta {
-                path: message_video_note.video_note().video().into(),
-                file_type: FileType::Video(message_video_note.video_note().into()),
-                file_name: None,
-            };
-            Some((None, Some(file)))
-        }
+        MessageContent::MessageVideoNote(message_video_note) => None,
         MessageContent::MessageVoiceNote(_) => None,
         MessageContent::MessageWebsiteConnected(_) => None,
 
@@ -151,17 +138,4 @@ fn make_entities_stack(entities: &[TextEntity]) -> Vec<(usize, String)> {
     stack.sort_by_key(|(i, _)| *i);
     stack.reverse();
     stack
-}
-
-
-impl From<&TgFile> for File {
-    fn from(file: &TgFile) -> Self {
-        Self {
-            local_path: Some(file.local().path().as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string()),
-            remote_file: file.id().to_string(),
-            remote_id: file.remote().unique_id().clone(),
-        }
-    }
 }
