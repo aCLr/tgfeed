@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use crate::db::{Channel, DbService, NewChannel, Post};
-use crate::models::File;
+use crate::models::{File, TelegramPostId};
 use crate::telegram::{NewUpdate, TelegramService};
+use anyhow::Context;
 use std::future::Future;
 use std::sync::Arc;
-use anyhow::Context;
+
+const HISTORY_LIMIT: i32 = 100;
 
 struct Inner {
     tg: TelegramService,
@@ -33,7 +36,7 @@ impl App {
                 log::info!("new update: {:?}", update);
                 match update {
                     NewUpdate::Post(post) => {
-                        if let Err(err) = inner.db.save_channel_posts(vec![post]).await {
+                        if let Err(err) = inner.db.save_channel_posts(&vec![post]).await {
                             log::error!("cannot save channel posts: {}", err)
                         };
                     }
@@ -94,7 +97,6 @@ impl App {
             };
         }
         Ok(())
-
     }
 
     pub async fn get_posts_or_search(
@@ -157,9 +159,9 @@ impl App {
         match self.inner.tg.search_channel(channel_name).await? {
             None => Ok(None),
             Some(ch) => {
-                let messages = self.inner.tg.get_channel_history(ch.telegram_id).await?;
-
+                let messages = self.inner.tg.get_channel_history(ch.telegram_id, HISTORY_LIMIT).await?;
                 self.inner.db.save_channel(ch).await?;
+                self.inner.db.save_channel_posts(&messages).await?;
 
                 let saved_channel = match self.inner.db.get_channel(channel_name).await? {
                     None => {
@@ -170,7 +172,21 @@ impl App {
                 };
                 log::info!("{:?}", saved_channel);
 
-                self.inner.db.save_channel_posts(messages).await?;
+                let mut post_to_files: HashMap<TelegramPostId, Vec<i32>> = HashMap::new();
+
+                for msg in messages.iter() {
+                    let files = post_to_files.entry(msg.telegram_id).or_default();
+                    files.extend(msg.files.clone())
+                }
+
+                let ids = self.inner.db.get_channel_post_ids(saved_channel.id, HISTORY_LIMIT).await?;
+                for (id, telegram_id) in ids.into_iter() {
+                    if let Some(files) = post_to_files.remove(&telegram_id) {
+                        self.inner.db.save_post_files(id, files).await?;
+                    }
+                }
+
+
                 Ok(Some(saved_channel))
             }
         }

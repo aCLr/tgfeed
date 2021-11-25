@@ -2,6 +2,7 @@ use rust_tdlib::types::{Chat, File as TgFile};
 
 pub type TelegramPostId = i64;
 pub type TelegramChatId = i64;
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct Post {
     pub title: Option<String>,
@@ -10,6 +11,7 @@ pub struct Post {
     pub pub_date: i32,
     pub content: String,
     pub chat_id: TelegramChatId,
+    pub files: Vec<i32>,
 }
 
 impl Post {
@@ -55,9 +57,7 @@ pub struct File {
     pub remote_file: i32,
     // id to make requests
     pub remote_id: String,
-    pub telegram_post_id:  TelegramPostId,
 }
-
 
 impl From<&TgFile> for File {
     fn from(file: &TgFile) -> Self {

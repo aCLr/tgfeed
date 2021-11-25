@@ -1,6 +1,8 @@
-use crate::models::File;
+use crate::models::{File, TelegramChatId, TelegramPostId};
 pub use crate::models::{Channel, NewChannel, Post};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::Row;
+use std::collections::HashMap;
 
 pub struct DbService {
     pool: SqlitePool,
@@ -37,6 +39,33 @@ impl DbService {
             .await?)
     }
 
+    pub async fn get_files_for_posts(
+        &self,
+        post_ids: Vec<i32>,
+    ) -> anyhow::Result<HashMap<i32, Vec<i32>>> {
+        let rows = sqlx::query(
+            r#"SELECT post_id, local_path, remote_file as "remote_file: i32", remote_id
+                FROM files
+                INNER JOIN post_files ON post_files.file_id=files.id
+                WHERE post_files.post_id IN ($1)"#,
+        )
+        .bind(
+            post_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+                .join(","),
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut result = HashMap::with_capacity(rows.len());
+        for row in rows.into_iter() {
+            let mut post_files: &mut Vec<i32> = result.entry(row.get("post_id")).or_default();
+            post_files.push(row.get("remote_file"))
+        }
+        Ok(result)
+    }
+
     pub async fn get_not_loaded_files(&self) -> anyhow::Result<Vec<File>> {
         Ok(sqlx::query_as!(
             File,
@@ -44,6 +73,16 @@ impl DbService {
         )
             .fetch_all(&self.pool)
             .await?)
+    }
+
+    pub async fn save_post_files(&self, post_id: i64, file_ids: Vec<i32>) -> anyhow::Result<()> {
+        for file_id in file_ids.iter() {
+            sqlx::query!(
+                "insert into post_files (post_id, file_id) values ($1, $2)",
+                post_id, file_id
+            ).execute(&self.pool).await?;
+        }
+        Ok(())
     }
 
     pub async fn save_channel(&self, channel: NewChannel) -> anyhow::Result<()> {
@@ -61,7 +100,7 @@ impl DbService {
         Ok(())
     }
 
-    pub async fn save_channel_posts(&self, posts: Vec<Post>) -> anyhow::Result<()> {
+    pub async fn save_channel_posts(&self, posts: &Vec<Post>) -> anyhow::Result<()> {
         for p in posts.iter() {
             sqlx::query!(
                 r#"INSERT INTO posts (title, link, telegram_id, pub_date, content, chat_id)
@@ -89,6 +128,18 @@ impl DbService {
         .await?)
     }
 
+    pub async fn get_channel_post_ids(&self, chat_id: TelegramChatId, limit: i32) -> anyhow::Result<Vec<(i64, TelegramPostId)>> {
+        let rows = sqlx::query!(
+            r#"SELECT id, telegram_id
+            FROM posts
+            WHERE chat_id = $1
+            LIMIT $2"#,
+            chat_id,
+            limit,
+        ).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|v|(v.id, v.telegram_id)).collect())
+    }
+
     pub async fn get_channel_posts(
         &self,
         channel_name: &str,
@@ -97,24 +148,33 @@ impl DbService {
             None => return Ok(None),
             Some(ch) => ch,
         };
-        let posts = match sqlx::query_as!(
-            Post,
+        let rows = sqlx::query(
             r#"SELECT title, link, telegram_id, pub_date as "pub_date: i32", content, chat_id
             FROM posts
             WHERE chat_id = $1
             LIMIT 25"#,
-            ch.telegram_id
+            // ch.telegram_id
         )
-        // .bind(ch.id)
+        .bind(ch.telegram_id)
         .fetch_all(&self.pool)
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("{:?}", e);
-                anyhow::bail!(e)
-            }
-        };
+        .await?;
+        let mut files = self
+            .get_files_for_posts(rows.iter().map(|r| r.get("id")).collect())
+            .await?;
+        let mut posts = Vec::with_capacity(rows.len());
+        rows.into_iter().for_each(|r| {
+            let post_files = files.remove(&r.get("id")).unwrap_or_default();
+            let post = Post {
+                title: r.get("title"),
+                link: r.get("link"),
+                telegram_id: r.get("telegram_id"),
+                pub_date: r.get("pub_date"),
+                content: r.get("content"),
+                chat_id: r.get("chat_id"),
+                files: post_files,
+            };
+            posts.push(post);
+        });
         Ok(Some((ch, posts)))
     }
 }

@@ -30,8 +30,12 @@ async fn main() {
     let app = App::new(telegram, db);
     app.start().await.expect("cannot start application");
 
-    app.synchronize_channels().await.expect("cannot synchronize channels");
-    app.synchronize_files().await.expect("cannot synchronize files");
+    app.synchronize_channels()
+        .await
+        .expect("cannot synchronize channels");
+    app.synchronize_files()
+        .await
+        .expect("cannot synchronize files");
 
     log::info!("starting web server");
     server::run_server(app).await;

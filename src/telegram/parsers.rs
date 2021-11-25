@@ -1,15 +1,12 @@
 use crate::models::File;
-use rust_tdlib::types::{
-    FileType, FormattedText, MessageContent, TextEntity, TextEntityType,
-};
-use crate::telegram::new_file;
+use rust_tdlib::types::{FileType, FormattedText, MessageContent, TextEntity, TextEntityType};
 
 pub fn parse_message_content(message: &MessageContent) -> Option<(Option<String>, Option<File>)> {
     match message {
         MessageContent::MessageText(text) => Some((Some(parse_formatted_text(text.text())), None)),
         MessageContent::MessageAnimation(message_animation) => Some((
             Some(parse_formatted_text(message_animation.caption())),
-            Some(new_file(message_animation.animation().animation().into())),
+            Some(message_animation.animation().animation().into()),
         )),
         MessageContent::MessageAudio(message_audio) => None,
         MessageContent::MessageDocument(message_document) => None,

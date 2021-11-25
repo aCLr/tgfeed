@@ -5,7 +5,13 @@ use rust_tdlib::client::{
     AuthStateHandler, Client, ClientState, ConsoleAuthStateHandler, SignalAuthStateHandler, Worker,
 };
 use rust_tdlib::tdjson::set_log_verbosity_level;
-use rust_tdlib::types::{AuthorizationStateWaitCode, AuthorizationStateWaitEncryptionKey, AuthorizationStateWaitOtherDeviceConfirmation, AuthorizationStateWaitPassword, AuthorizationStateWaitPhoneNumber, AuthorizationStateWaitRegistration, ChatType, DownloadFile, FileType, FormattedText, GetChatHistory, GetChats, MessageContent, SearchPublicChat, TdlibParameters, TextEntity, TextEntityType, Update, GetChat, Chat, GetSupergroup};
+use rust_tdlib::types::{
+    AuthorizationStateWaitCode, AuthorizationStateWaitEncryptionKey,
+    AuthorizationStateWaitOtherDeviceConfirmation, AuthorizationStateWaitPassword,
+    AuthorizationStateWaitPhoneNumber, AuthorizationStateWaitRegistration, Chat, ChatType,
+    DownloadFile, FileType, FormattedText, GetChat, GetChatHistory, GetChats, GetSupergroup,
+    MessageContent, SearchPublicChat, TdlibParameters, TextEntity, TextEntityType, Update,
+};
 use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -120,7 +126,7 @@ impl TelegramService {
         }
     }
 
-    pub async fn get_channel_history(&self, chat_id: i64) -> anyhow::Result<Vec<Post>> {
+    pub async fn get_channel_history(&self, chat_id: i64, limit: i32) -> anyhow::Result<Vec<Post>> {
         let guard = self.inner.read().await;
         match guard.as_ref() {
             None => {
@@ -132,7 +138,7 @@ impl TelegramService {
                     .get_chat_history(
                         GetChatHistory::builder()
                             .chat_id(chat_id)
-                            .limit(100)
+                            .limit(limit)
                             .offset(-50)
                             .from_message_id(0)
                             .build(),
@@ -147,7 +153,9 @@ impl TelegramService {
                             Some((content, file)) => (content, file),
                         };
 
+                        let mut file_ids = Vec::with_capacity(1);
                         if let Some(file) = file {
+                            file_ids.push(file.remote_file);
                             if let Err(err) = self.download_file(file.remote_file).await {
                                 log::error!("cannot download file: {}", err);
                             }
@@ -159,6 +167,7 @@ impl TelegramService {
                             pub_date: msg.date(),
                             content: content.unwrap_or_default(),
                             chat_id,
+                            files: file_ids,
                         })
                     }
                 }
@@ -202,17 +211,25 @@ impl TelegramService {
                     .await?;
                 let mut result = Vec::with_capacity(chats.chat_ids().len());
                 for chat_id in chats.chat_ids().into_iter() {
-                    let chat = inner.client.get_chat(GetChat::builder().chat_id(*chat_id).build()).await?;
+                    let chat = inner
+                        .client
+                        .get_chat(GetChat::builder().chat_id(*chat_id).build())
+                        .await?;
 
                     if let ChatType::Supergroup(type_sg) = chat.type_() {
                         if type_sg.is_channel() {
-                            let sg = inner.client.get_supergroup(GetSupergroup::builder().supergroup_id(type_sg.supergroup_id()).build()).await?;
+                            let sg = inner
+                                .client
+                                .get_supergroup(
+                                    GetSupergroup::builder()
+                                        .supergroup_id(type_sg.supergroup_id())
+                                        .build(),
+                                )
+                                .await?;
 
                             result.push(new_channel(chat, sg.username()))
-
                         }
                     }
-
                 }
                 Ok(result)
             }
@@ -231,7 +248,7 @@ impl TelegramService {
                     .search_public_chat(SearchPublicChat::builder().username(channel_name).build())
                     .await?;
                 if !is_channel(&chat) {
-                    return Ok(None)
+                    return Ok(None);
                 }
 
                 Ok(Some(new_channel(chat, channel_name)))
@@ -241,54 +258,54 @@ impl TelegramService {
 }
 
 fn init_updates_reader(mut receiver: Receiver<Box<Update>>) -> Receiver<NewUpdate> {
-    let (sx, rx) = mpsc::channel(20);
+    let (sx, rx) = mpsc::channel(2000);
 
     tokio::spawn(async move {
         while let Some(update) = receiver.recv().await {
             let new_update = match update.as_ref() {
                 Update::ChatPhoto(chat_photo) => None,
                 Update::ChatTitle(chat_title) => None,
-                Update::File(file) =>
-                match file.file().local().is_downloading_completed() {
+                Update::File(file) => match file.file().local().is_downloading_completed() {
                     false => None,
-                    true => {
-                        Some(NewUpdate::File(File{
-                            local_path: Some(file.file().local().path().clone()),
-                            remote_file: file.file().id(),
-                            remote_id: file.file().remote().unique_id().clone(),
-                    }))
-                }},
+                    true => Some(NewUpdate::File(File {
+                        local_path: Some(file.file().local().path().clone()),
+                        remote_file: file.file().id(),
+                        remote_id: file.file().remote().unique_id().clone(),
+                    })),
+                },
                 Update::MessageContent(content) => None,
                 Update::NewChat(new_chat) => None,
-                Update::NewMessage(new_message) => {
-                    match new_message.message().is_channel_post() {
-                        false => None,
-                        true => {
-                            let parsed = parsers::parse_message_content(new_message.message().content());
-                            match parsed {
-                                None => None,
-                                Some((content, file)) => {
-                                    if let Some(file) = file {
-                                        if let Err(err) = sx
-                                            .send_timeout(NewUpdate::File(file), SEND_UPDATE_TIMEOUT)
-                                            .await
-                                        {
-                                            log::error!("cannot send new file update");
-                                        }
+                Update::NewMessage(new_message) => match new_message.message().is_channel_post() {
+                    false => None,
+                    true => {
+                        let parsed =
+                            parsers::parse_message_content(new_message.message().content());
+                        match parsed {
+                            None => None,
+                            Some((content, file)) => {
+                                let mut file_ids = Vec::with_capacity(1);
+                                if let Some(file) = file {
+                                    file_ids.push(file.remote_file);
+                                    if let Err(err) = sx
+                                        .send_timeout(NewUpdate::File(file), SEND_UPDATE_TIMEOUT)
+                                        .await
+                                    {
+                                        log::error!("cannot send new file update");
                                     }
-                                    Some(NewUpdate::Post(Post {
-                                        title: None,
-                                        link: "".to_string(),
-                                        telegram_id: new_message.message().id(),
-                                        pub_date: new_message.message().date(),
-                                        content: content.unwrap_or_default(),
-                                        chat_id: new_message.message().chat_id(),
-                                    }))
                                 }
+                                Some(NewUpdate::Post(Post {
+                                    title: None,
+                                    link: "".to_string(),
+                                    telegram_id: new_message.message().id(),
+                                    pub_date: new_message.message().date(),
+                                    content: content.unwrap_or_default(),
+                                    chat_id: new_message.message().chat_id(),
+                                    files: file_ids,
+                                }))
                             }
                         }
                     }
-                }
+                },
                 Update::Poll(poll) => None,
                 _ => None,
             };
@@ -360,7 +377,6 @@ impl AuthStateHandler for AuthHandler {
     }
 }
 
-
 fn new_channel(chat: Chat, channel_name: &str) -> NewChannel {
     NewChannel {
         title: chat.title().clone(),
@@ -369,25 +385,12 @@ fn new_channel(chat: Chat, channel_name: &str) -> NewChannel {
     }
 }
 
-fn new_file(file: &TgFile, post_id: i64) -> File {
-    File {
-        local_path: Some(file.local().path().as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string()),
-        remote_file: file.id(),
-        remote_id: file.remote().unique_id().clone(),
-        telegram_post_id: post_id,
-    }
-
-}
 fn is_channel(chat: &Chat) -> bool {
     match chat.type_() {
         ChatType::_Default => false,
         ChatType::BasicGroup(g) => false,
         ChatType::Private(_) => false,
         ChatType::Secret(_) => false,
-        ChatType::Supergroup(sg) => {
-            sg.is_channel()
-        }
+        ChatType::Supergroup(sg) => sg.is_channel(),
     }
 }
